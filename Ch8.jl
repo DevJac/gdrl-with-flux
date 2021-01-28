@@ -46,12 +46,18 @@ struct SARSF{S, A}
     f  :: Bool
 end
 
+function onehot(hot_index, size)
+    result = zeros(Float32, size)
+    result[hot_index] = 1.0f0
+    result
+end
+
 const opt = RMSProp(0.000_5)
 
 function optimize!(q, sars, epochs=40, γ=1.0f0)
     γ = Float32(γ)
     s = reduce(hcat, map(x -> x.s, sars))
-    a = reduce(hcat, map(x -> x.a == 0 ? [1.0f0, 0.0f0] : [0.0f0, 1.0f0], sars))
+    a = reduce(hcat, map(x -> onehot(env_action_to_network_action(x.a), length(env.actions)), sars))
     r = reduce(hcat, map(x -> x.r, sars))
     s′ = reduce(hcat, map(x -> x.s′, sars))
     f = reduce(hcat, map(x -> x.f ? 0.0f0 : 1.0f0, sars))
@@ -73,7 +79,9 @@ function optimize!(q, sars, epochs=40, γ=1.0f0)
 end
 
 const batch_size = 1024
-const episode_time_limit = 500
+const episode_time_limit = env.pyenv._max_episode_steps
+
+@info("env step limit", episode_time_limit)
 
 function run(episode_limit=20000)
     sars = SARSF{Vector{Float32},Int8}[]
@@ -126,7 +134,7 @@ last(xs, n) = xs[max(1, end-n+1):end]
 
 function demo_policy(policy, n_episodes=5)
     try
-        for _ in 1:n_episodes
+        return map(1:n_episodes) do _
             run_episode(env, policy) do _
                 render(env)
             end
