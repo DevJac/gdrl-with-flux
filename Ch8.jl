@@ -14,9 +14,12 @@ end
 Flux.@functor Q
 function Q()
     network = Chain(
-        Dense(length(env.state), 512, relu),
-        Dense(512, 128, relu),
-        Dense(128, length(env.actions)))
+        Dense(length(env.state), 512, relu,
+              initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform),
+        Dense(512, 128, relu,
+              initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform),
+        Dense(128, length(env.actions), identity,
+              initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform))
     Q(network)
 end
 
