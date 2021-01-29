@@ -25,15 +25,15 @@ end
 
 @info("Q parameter count", params(Q()) .|> length |> sum)
 
-struct Policy <: AbstractPolicy
+network_action_to_env_action(a) = a-1
+env_action_to_network_action(a) = a+1
+
+struct EGreedyPolicy <: AbstractPolicy
     ϵ :: Float32
     q_network :: Q
 end
 
-network_action_to_env_action(a) = a-1
-env_action_to_network_action(a) = a+1
-
-function Reinforce.action(policy::Policy, r, s, A)
+function Reinforce.action(policy::EGreedyPolicy, r, s, A)
     if rand() < policy.ϵ
         return rand(A)
     else
@@ -42,11 +42,11 @@ function Reinforce.action(policy::Policy, r, s, A)
 end
 
 struct SARSF{S, A}
-    s  :: S
-    a  :: A
-    r  :: Float32
-    s′ :: S
-    f  :: Bool
+    s       :: S
+    a       :: A
+    r       :: Float32
+    s′      :: S
+    failed  :: Bool
 end
 
 function onehot(hot_index, size)
@@ -63,7 +63,7 @@ function optimize!(q, sars, epochs=40, γ=1.0f0)
     a = reduce(hcat, map(x -> onehot(env_action_to_network_action(x.a), length(env.actions)), sars))
     r = reduce(hcat, map(x -> x.r, sars))
     s′ = reduce(hcat, map(x -> x.s′, sars))
-    f = reduce(hcat, map(x -> x.f ? 0.0f0 : 1.0f0, sars))
+    f = reduce(hcat, map(x -> x.failed ? 0.0f0 : 1.0f0, sars))
     @assert typeof(s) == Array{Float32, 2}
     @assert typeof(a) == Array{Float32, 2}
     @assert typeof(r) == Array{Float32, 2}
@@ -82,28 +82,29 @@ function optimize!(q, sars, epochs=40, γ=1.0f0)
 end
 
 const batch_size = 1024
-const episode_time_limit = env.pyenv._max_episode_steps
+const episode_step_limit = env.pyenv._max_episode_steps
+const newline_frequency = 60
 
-@info("env step limit", episode_time_limit)
+@info("env step limit", episode_step_limit)
 
 function run(episode_limit=20000)
     sars = SARSF{Vector{Float32},Int8}[]
     exploit_rewards = Float32[]
     explore_rewards = Float32[]
     q = Q()
-    explore_policy = Policy(0.5, q)
-    exploit_policy = Policy(0.0, q)
+    explore_policy = EGreedyPolicy(0.5, q)
+    exploit_policy = EGreedyPolicy(0.0, q)
     time_steps = 0
     start_time = now()
-    newline_time = time() + 60
+    newline_time = time() + newline_frequency
     try
         for episode in 1:episode_limit
             T = 0
             explore_r = run_episode(env, explore_policy) do (s, a, r, s′)
                 time_steps += 1
                 T += 1
-                @assert T <= episode_time_limit
-                failed = finished(env) && T < episode_time_limit
+                @assert T <= episode_step_limit
+                failed = finished(env) && T < episode_step_limit
                 push!(sars, SARSF(Float32.(copy(s)), Int8(a), Float32(r), Float32.(copy(s′)), failed))
                 if length(sars) >= batch_size
                     optimize!(q, sars)
@@ -111,7 +112,7 @@ function run(episode_limit=20000)
                 end
             end
             exploit_r = run_episode(env, exploit_policy) do _
-                @assert T <= episode_time_limit
+                @assert T <= episode_step_limit
             end
             push!(explore_rewards, explore_r)
             push!(exploit_rewards, exploit_r)
@@ -121,12 +122,15 @@ function run(episode_limit=20000)
                     mean(last(explore_rewards, 100)), std(last(explore_rewards, 100)),
                     mean(last(exploit_rewards, 100)), std(last(exploit_rewards, 100)))
             if time() >= newline_time
-                newline_time += 60
+                newline_time += newline_frequency
                 println()
             end
             if mean(last(exploit_rewards, 100)) >= 475; break end
         end
         @printf("\n------> Ran %5d episodes\n\n", length(explore_rewards))
+    catch e
+        if !isa(e, InterruptException); rethrow() end
+        @printf("\n---> Interrupted at %d episodes\n\n", length(explore_rewards))
     finally
         close(env)
     end
@@ -142,6 +146,8 @@ function demo_policy(policy, n_episodes=5)
                 render(env)
             end
         end
+    catch e
+        if !isa(e, InterruptException); rethrow() end
     finally
         close(env)
     end
