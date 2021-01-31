@@ -1,7 +1,9 @@
 using DataStructures
+using Dates
 using Flux
 using Flux.Optimise: update!
 using OpenAIGym
+using Printf
 using Statistics
 
 const env = GymEnv(:CartPole, :v1)
@@ -105,13 +107,24 @@ function optimize!(policy, sars, γ=1.0f0)
     polyak_average!(params(policy.q_target), params(policy.q_online))
 end
 
+const newline_frequency = 60
+
 function run()
+    q = Q()
+    explore_policy = Policy(0.5, q)
+    exploit_policy = Policy(0.0, q)
+    explore_rewards = Float32[]
+    exploit_rewards = Float32[]
+    time_steps = 0
+    start_time = now()
+    newline_time = time() + newline_frequency
     try
         policy = Policy(0.5, Q())
-        global sars = CircularBuffer{SARSF{Vector{Float32},Int8}}(10_000)
-        for _ in 1:50
+        sars = CircularBuffer{SARSF{Vector{Float32},Int8}}(10_000)
+        for episode in 1:2000
             episode_t = 0
-            r = run_episode(env, Policy(0.5f0, Q())) do (s, a, r, s′)
+            explore_r = run_episode(env, explore_policy) do (s, a, r, s′)
+                time_steps += 1
                 episode_t += 1
                 @assert episode_t <= env_step_limit
                 failed = finished(env) && episode_t < env_step_limit
@@ -121,7 +134,41 @@ function run()
                     Float32(r),
                     Float32.(copy(s′)),
                     failed))
-                optimize!(policy, sars)
+                optimize!(policy, sample(sars, 64))
+                #render(env)
+            end
+            episode_t = 0
+            exploit_r = run_episode(env, exploit_policy) do _
+                episode_t += 1
+                @assert episode_t < env_step_limit
+            end
+            push!(explore_rewards, explore_r)
+            push!(exploit_rewards, exploit_r)
+            @printf("\u1b[?25l\u1b[0E%s ep %5d ts %6d, explore r %6.2f ± %6.2f, exploit r %6.2f ± %6.2f \u1b[0K\u1b[?25h",
+                    Dates.format(Time(Nanosecond(now() - start_time)), "HH:MM:SS"),
+                    episode, time_steps,
+                    mean(last(explore_rewards, 100)), std(last(explore_rewards, 100)),
+                    mean(last(exploit_rewards, 100)), std(last(exploit_rewards, 100)))
+            if time() >= newline_time
+                newline_time += newline_frequency
+                println()
+            end
+            if mean(last(exploit_rewards, 100)) >= 475; break end
+        end
+    catch e
+        if !isa(e, InterruptException); rethrow() end
+    finally
+        close(env)
+    end
+    (exploit_policy, exploit_rewards, explore_rewards)
+end
+
+last(xs, n) = xs[max(1, end-n+1):end]
+
+function demo_policy(policy, n_episodes=5)
+    try
+        return map(1:n_episodes) do _
+            run_episode(env, policy) do _
                 render(env)
             end
         end
@@ -130,4 +177,10 @@ function run()
     finally
         close(env)
     end
+end
+
+function graph(rewards)
+    scatter(rewards, size=(1200, 800), background_color=:black, markercolor=:white, legend=false,
+            markersize=3, markeralpha=0.3,
+            markerstrokewidth=0, markerstrokealpha=0)
 end
