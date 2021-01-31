@@ -77,7 +77,7 @@ end
 function optimize!(policy, sars, γ=1.0f0)
     γ = Float32(γ)
     s = reduce(hcat, map(x -> x.s, sars))
-    a = reduce(hcat, 
+    a = reduce(hcat,
                map(x -> onehot(env_a_to_network_a(x.a), length(env.actions)), sars))
     r = reshape(map(x -> x.r, sars), 1, :)
     s′ = reduce(hcat, map(x -> x.s′, sars))
