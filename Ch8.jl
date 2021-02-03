@@ -4,6 +4,7 @@ using Flux.Optimise: update!
 using OpenAIGym
 using Plots
 using Printf
+using Sars
 using Statistics
 
 const env = GymEnv(:CartPole, :v1)
@@ -25,8 +26,8 @@ end
 
 @info("Q parameter count", params(Q()) .|> length |> sum)
 
-network_action_to_env_action(a) = a-1
-env_action_to_network_action(a) = a+1
+network_index_to_env_action(a) = a-1
+env_action_to_network_index(a) = a+1
 
 struct EGreedyPolicy <: AbstractPolicy
     ϵ :: Float32
@@ -37,44 +38,20 @@ function Reinforce.action(policy::EGreedyPolicy, r, s, A)
     if rand() < policy.ϵ
         return rand(A)
     else
-        return argmax(policy.q_network.network(s)) |> network_action_to_env_action
+        return argmax(policy.q_network.network(s)) |> network_index_to_env_action
     end
-end
-
-struct SARSF{S, A}
-    s       :: S
-    a       :: A
-    r       :: Float32
-    s′      :: S
-    failed  :: Bool
-end
-
-function onehot(hot_index, size)
-    result = zeros(Float32, size)
-    result[hot_index] = 1.0f0
-    result
 end
 
 const opt = RMSProp(0.000_5)
 
-function optimize!(q, sars, epochs=40, γ=1.0f0)
+function optimize!(q, sars₀, epochs=40, γ=1.0f0)
     γ = Float32(γ)
-    s = reduce(hcat, map(x -> x.s, sars))
-    a = reduce(hcat, map(x -> onehot(env_action_to_network_action(x.a), length(env.actions)), sars))
-    r = reduce(hcat, map(x -> x.r, sars))
-    s′ = reduce(hcat, map(x -> x.s′, sars))
-    f = reduce(hcat, map(x -> x.failed ? 0.0f0 : 1.0f0, sars))
-    @assert typeof(s) == Array{Float32, 2}
-    @assert typeof(a) == Array{Float32, 2}
-    @assert typeof(r) == Array{Float32, 2}
-    @assert typeof(s′) == Array{Float32, 2}
-    @assert typeof(f) == Array{Float32, 2}
-    @assert typeof(γ) == Float32
-    for _ in 1:epochs
-        target = r + γ * maximum(q.network(s′), dims=1) .* f
+    sars = stack(sars₀, length(env.actions), env_action_to_network_index)
+    for epoch in 1:epochs
+        target = sars.r + γ * maximum(q.network(sars.s′), dims=1) .* sars.f
         grads = gradient(params(q)) do
-            qs = q.network(s)
-            predicted = sum(qs .* a, dims=1)
+            qs = q.network(sars.s)
+            predicted = sum(qs .* sars.a_hot, dims=1)
             mean((predicted .- target).^2)
         end
         update!(opt, params(q), grads)
@@ -82,10 +59,8 @@ function optimize!(q, sars, epochs=40, γ=1.0f0)
 end
 
 const batch_size = 1024
-const episode_step_limit = env.pyenv._max_episode_steps
+const env_step_limit = env.pyenv._max_episode_steps
 const newline_frequency = 60
-
-@info("env step limit", episode_step_limit)
 
 function run(episode_limit=20000)
     sars = SARSF{Vector{Float32},Int8}[]
@@ -103,8 +78,8 @@ function run(episode_limit=20000)
             explore_r = run_episode(env, explore_policy) do (s, a, r, s′)
                 time_steps += 1
                 T += 1
-                @assert T <= episode_step_limit
-                failed = finished(env) && T < episode_step_limit
+                @assert T <= env_step_limit
+                failed = finished(env) && T < env_step_limit
                 push!(sars, SARSF(Float32.(copy(s)), Int8(a), Float32(r), Float32.(copy(s′)), failed))
                 if length(sars) >= batch_size
                     optimize!(q, sars)
@@ -112,7 +87,7 @@ function run(episode_limit=20000)
                 end
             end
             exploit_r = run_episode(env, exploit_policy) do _
-                @assert T <= episode_step_limit
+                @assert T <= env_step_limit
             end
             push!(explore_rewards, explore_r)
             push!(exploit_rewards, exploit_r)
