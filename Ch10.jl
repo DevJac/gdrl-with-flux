@@ -6,6 +6,7 @@ using OpenAIGym
 using Plots
 using Printf
 using Statistics
+using Sars
 
 const env = GymEnv(:CartPole, :v1)
 
@@ -52,20 +53,6 @@ end
 env_a_to_network_a(a) = a+1
 network_a_to_env_a(a) = a-1
 
-struct SARSF{S, A}
-    s      :: S
-    a      :: A
-    r      :: Float32
-    s′     :: S
-    failed :: Bool
-end
-
-function onehot(hot_i, length)
-    result = zeros(Float32, length)
-    result[hot_i] = 1.0f0
-    result
-end
-
 function polyak_average!(a, b, τ=0.01)
     for (pa, pb) in zip(a, b)
         pa .*= 1 - τ
@@ -75,31 +62,20 @@ end
 
 const opt = RMSProp(0.000_7)
 
-function optimize!(policy, sars, γ=1.0f0)
+function optimize!(policy, sars₀, γ=1.0f0)
     γ = Float32(γ)
-    s = reduce(hcat, map(x -> x.s, sars))
-    a = reduce(hcat,
-               map(x -> onehot(env_a_to_network_a(x.a), length(env.actions)), sars))
-    r = reshape(map(x -> x.r, sars), 1, :)
-    s′ = reduce(hcat, map(x -> x.s′, sars))
-    f = reshape(map(x -> x.failed ? 0.0f0 : 1.0f0, sars), 1, :)
-    @assert typeof(s) == Array{Float32, 2}
-    @assert typeof(a) == Array{Float32, 2}
-    @assert typeof(r) == Array{Float32, 2}
-    @assert typeof(s′) == Array{Float32, 2}
-    @assert typeof(f) == Array{Float32, 2}
-    @assert typeof(γ) == Float32
+    sars = stack(sars₀, length(env.actions), env_a_to_network_a)
     a′ = mapslices(
         eavs -> onehot(argmax(eavs), length(eavs)),
-        policy.q_online(s′),
+        policy.q_online(sars.s′),
         dims=1)
     @assert typeof(a′) == Array{Float32, 2}
-    qs′ = policy.q_target(s′)
+    qs′ = policy.q_target(sars.s′)
     @assert typeof(qs′) == Array{Float32, 2}
-    target = r + γ * sum(qs′ .* a′, dims=1) .* f
+    target = sars.r + γ * sum(qs′ .* a′, dims=1) .* sars.f
     grads = gradient(params(policy.q_online)) do
-        qs = policy.q_online(s)
-        predicted = sum(qs .* a, dims=1)
+        qs = policy.q_online(sars.s)
+        predicted = sum(qs .* sars.a_hot, dims=1)
         mean((target .- predicted).^2)
     end
     update!(opt, params(policy.q_online), grads)
