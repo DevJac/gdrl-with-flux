@@ -10,6 +10,12 @@ using Sars
 
 const env = GymEnv(:CartPole, :v1)
 
+function Linear(in, out, activation)
+    Dense(in, out, activation,
+          initW=(_dims...) -> Float32.((rand(out, in).-0.5).*(2/sqrt(in))),
+          initb=(_dims...) -> Float32.((rand(out).-0.5).*(2/sqrt(in))))
+end
+
 struct Q{N, A, V}
     main_network   :: N
     action_network :: A
@@ -18,14 +24,10 @@ end
 Flux.@functor Q
 function Q()
     main_network = Chain(
-        Dense(length(env.state), 512, relu,
-              initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform),
-        Dense(512, 128, relu,
-              initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform))
-    action_network = Dense(128, length(env.actions), identity,
-                           initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform)
-    value_network = Dense(128, 1, identity,
-                          initW=Flux.kaiming_uniform, initb=Flux.kaiming_uniform)
+        Linear(length(env.state), 512, relu),
+        Linear(512, 128, relu))
+    action_network = Linear(128, length(env.actions), identity)
+    value_network = Linear(128, 1, identity)
     Q(main_network, action_network, value_network)
 end
 function (Q::Q)(s)
@@ -35,15 +37,33 @@ function (Q::Q)(s)
     v + a .- mean(a)
 end
 
-struct Policy{Q} <: AbstractPolicy
-    ϵ        :: Float32
-    q_online :: Q
-    q_target :: Q
+mutable struct Policy{Q} <: AbstractPolicy
+    ϵ             :: Float32
+    ϵ_min         :: Float32
+    ϵ_decay_steps :: Float32
+    q_online      :: Q
+    q_target      :: Q
+    T             :: Int64
 end
-Policy(ϵ, q) = Policy(Float32(ϵ), q, deepcopy(q))
+Policy(ϵ, ϵ_min, ϵ_half_life, q) = Policy(Float32(ϵ), Float32(ϵ_min), Float32(ϵ_half_life), q, deepcopy(q), 0)
+
+function policy_ϵ(p::Policy)
+    @assert (p.ϵ >= p.ϵ_min) "ϵ must be greater than or equal to ϵ_min"
+    decay_delta = p.ϵ - p.ϵ_min
+    if decay_delta == 0 || p.ϵ_decay_steps <= 0
+        p.ϵ_min
+    else
+        decay_base = (0.001/decay_delta)^(1/p.ϵ_decay_steps)
+        ϵ = p.ϵ_min + decay_delta * decay_base^p.T
+        @assert p.ϵ_min <= ϵ && ϵ <= p.ϵ
+        ϵ
+    end
+end
 
 function Reinforce.action(policy::Policy, r, s, A)
-    if rand() < policy.ϵ
+    ϵ = policy_ϵ(policy)
+    policy.T += 1
+    if rand() < ϵ
         rand(A)
     else
         argmax(policy.q_online(s)) |> network_a_to_env_a
@@ -53,14 +73,14 @@ end
 env_a_to_network_a(a) = a+1
 network_a_to_env_a(a) = a-1
 
-function polyak_average!(a, b, τ=0.01)
+function polyak_average!(a, b, τ=0.1)
     for (pa, pb) in zip(a, b)
         pa .*= 1 - τ
         pa .+= pb * τ
     end
 end
 
-const opt = RMSProp(0.000_7)
+const opt = RMSProp(0.000_5)
 
 function optimize!(policy, sars₀, γ=1.0f0)
     γ = Float32(γ)
@@ -85,11 +105,11 @@ end
 const env_step_limit = env.pyenv._max_episode_steps
 const newline_frequency = 60
 
-function run(episode_limit=5000; render=false)
-    sars = CircularBuffer{SARSF{Vector{Float32},Int8}}(10_000)
+function run(episode_limit=10_000)
+    sars = CircularBuffer{SARSF{Vector{Float32},Int8}}(50_000)
     q = Q()
-    explore_policy = Policy(0.5, q)
-    exploit_policy = Policy(0.0, q)
+    explore_policy = Policy(1.0, 0.3, 20_000, q)
+    exploit_policy = Policy(0.0, 0.0, 1, q)
     explore_rewards = Float32[]
     exploit_rewards = Float32[]
     time_steps = 0
@@ -109,8 +129,9 @@ function run(episode_limit=5000; render=false)
                     Float32(r),
                     Float32.(copy(s′)),
                     failed))
-                optimize!(explore_policy, sample(sars, 64))
-                if render; OpenAIGym.render(env) end
+                if length(sars) > 64 * 5
+                    optimize!(explore_policy, sample(sars, 64))
+                end
             end
             episode_t = 0
             exploit_r = run_episode(env, exploit_policy) do _
@@ -119,11 +140,12 @@ function run(episode_limit=5000; render=false)
             end
             push!(explore_rewards, explore_r)
             push!(exploit_rewards, exploit_r)
-            @printf("\u1b[?25l\u1b[0E%s ep %5d ts %6d, explore r %6.2f ± %6.2f, exploit r %6.2f ± %6.2f \u1b[0K\u1b[?25h",
+            @printf("\u1b[?25l\u1b[0E%s ep %5d ts %6d, explore r %6.2f ± %6.2f, exploit r %6.2f ± %6.2f, pϵ %4.2f \u1b[0K\u1b[?25h",
                     Dates.format(Time(Nanosecond(now() - start_time)), "HH:MM:SS"),
                     episode, time_steps,
                     mean(last(explore_rewards, 100)), std(last(explore_rewards, 100)),
-                    mean(last(exploit_rewards, 100)), std(last(exploit_rewards, 100)))
+                    mean(last(exploit_rewards, 100)), std(last(exploit_rewards, 100)),
+                    policy_ϵ(explore_policy))
             if time() >= newline_time
                 newline_time += newline_frequency
                 println()
