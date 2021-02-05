@@ -45,10 +45,10 @@ mutable struct Policy{Q} <: AbstractPolicy
     q_target      :: Q
     T             :: Int64
 end
-Policy(ϵ, ϵ_min, ϵ_half_life, q) = Policy(Float32(ϵ), Float32(ϵ_min), Float32(ϵ_half_life), q, deepcopy(q), 0)
+Policy(ϵ, ϵ_min, ϵ_decay_steps, q) = Policy(Float32(ϵ), Float32(ϵ_min), Float32(ϵ_decay_steps), q, deepcopy(q), 0)
 
 function policy_ϵ(p::Policy)
-    @assert (p.ϵ >= p.ϵ_min) "ϵ must be greater than or equal to ϵ_min"
+    @assert p.ϵ >= p.ϵ_min "ϵ must be greater than or equal to ϵ_min"
     decay_delta = p.ϵ - p.ϵ_min
     if decay_delta == 0 || p.ϵ_decay_steps <= 0
         p.ϵ_min
@@ -66,12 +66,12 @@ function Reinforce.action(policy::Policy, r, s, A)
     if rand() < ϵ
         rand(A)
     else
-        argmax(policy.q_online(s)) |> network_a_to_env_a
+        argmax(policy.q_online(s)) |> network_i_to_env_a
     end
 end
 
-env_a_to_network_a(a) = a+1
-network_a_to_env_a(a) = a-1
+env_a_to_network_i(a) = a+1
+network_i_to_env_a(a) = a-1
 
 function polyak_average!(a, b, τ=0.1)
     for (pa, pb) in zip(a, b)
@@ -80,11 +80,11 @@ function polyak_average!(a, b, τ=0.1)
     end
 end
 
-const opt = RMSProp(0.000_5)
+const opt = RMSProp(0.000_5, 0.99)
 
 function optimize!(policy, sars₀, γ=1.0f0)
     γ = Float32(γ)
-    sars = stack(sars₀, length(env.actions), env_a_to_network_a)
+    sars = stack(sars₀, length(env.actions), env_a_to_network_i)
     a′ = mapslices(
         eavs -> onehot(argmax(eavs), length(eavs)),
         policy.q_online(sars.s′),
