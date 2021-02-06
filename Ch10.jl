@@ -37,15 +37,25 @@ function (Q::Q)(s)
     v + a .- mean(a)
 end
 
-mutable struct Policy{Q} <: AbstractPolicy
+mutable struct Policy{Q, OPT} <: AbstractPolicy
     ϵ             :: Float32
     ϵ_min         :: Float32
     ϵ_decay_steps :: Float32
     q_online      :: Q
     q_target      :: Q
     T             :: Int64
+    optimizer     :: OPT
 end
-Policy(ϵ, ϵ_min, ϵ_decay_steps, q) = Policy(Float32(ϵ), Float32(ϵ_min), Float32(ϵ_decay_steps), q, deepcopy(q), 0)
+function Policy(ϵ, ϵ_min, ϵ_decay_steps, q)
+    Policy(
+        Float32(ϵ),
+        Float32(ϵ_min),
+        Float32(ϵ_decay_steps),
+        q,
+        deepcopy(q),
+        0,
+        RMSProp(0.000_5))
+end
 
 function policy_ϵ(p::Policy)
     @assert p.ϵ >= p.ϵ_min "ϵ must be greater than or equal to ϵ_min"
@@ -80,8 +90,6 @@ function polyak_average!(a, b, τ=0.1)
     end
 end
 
-const opt = RMSProp(0.000_5, 0.99)
-
 function optimize!(policy, sars₀, γ=1.0f0)
     γ = Float32(γ)
     sars = stack(sars₀, length(env.actions), env_a_to_network_i)
@@ -98,7 +106,7 @@ function optimize!(policy, sars₀, γ=1.0f0)
         predicted = sum(qs .* sars.a_hot, dims=1)
         mean((target .- predicted).^2)
     end
-    update!(opt, params(policy.q_online), grads)
+    update!(policy.optimizer, params(policy.q_online), grads)
     polyak_average!(params(policy.q_target), params(policy.q_online))
 end
 
@@ -109,7 +117,7 @@ function run(episode_limit=10_000)
     sars = CircularBuffer{SARSF{Vector{Float32},Int8}}(50_000)
     q = Q()
     explore_policy = Policy(1.0, 0.3, 20_000, q)
-    exploit_policy = Policy(0.0, 0.0, 1, q)
+    exploit_policy = Policy(0.0, 0.0, 0, q)
     explore_rewards = Float32[]
     exploit_rewards = Float32[]
     time_steps = 0

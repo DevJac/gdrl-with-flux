@@ -42,9 +42,7 @@ function Reinforce.action(policy::EGreedyPolicy, r, s, A)
     end
 end
 
-const opt = RMSProp(0.000_5)
-
-function optimize!(q, sars₀, epochs=40, γ=1.0f0)
+function optimize!(opt, q, sars₀, epochs=40, γ=1.0f0)
     γ = Float32(γ)
     sars = stack(sars₀, length(env.actions), env_action_to_network_index)
     for epoch in 1:epochs
@@ -63,6 +61,7 @@ const env_step_limit = env.pyenv._max_episode_steps
 const newline_frequency = 60
 
 function run(episode_limit=20000)
+    opt = RMSProp(0.000_5)
     sars = SARSF{Vector{Float32},Int8}[]
     exploit_rewards = Float32[]
     explore_rewards = Float32[]
@@ -82,7 +81,7 @@ function run(episode_limit=20000)
                 failed = finished(env) && T < env_step_limit
                 push!(sars, SARSF(Float32.(copy(s)), Int8(a), Float32(r), Float32.(copy(s′)), failed))
                 if length(sars) >= batch_size
-                    optimize!(q, sars)
+                    optimize!(opt, q, sars)
                     empty!(sars)
                 end
             end
