@@ -127,9 +127,9 @@ function run(episode_limit=10_000)
         for episode in 1:episode_limit
             episode_t = 0
             explore_r = run_episode(env, explore_policy) do (s, a, r, s′)
-                time_steps += 1
                 episode_t += 1
                 @assert episode_t <= env_step_limit
+                time_steps += 1
                 failed = finished(env) && episode_t < env_step_limit
                 push!(sars, SARSF(
                     Float32.(copy(s)),
@@ -138,7 +138,7 @@ function run(episode_limit=10_000)
                     Float32.(copy(s′)),
                     failed))
                 if length(sars) > 64 * 5
-                    optimize!(explore_policy, sample(sars, 64))
+                    optimize!(explore_policy, sample(sars, 64, replace=false))
                 end
             end
             episode_t = 0
