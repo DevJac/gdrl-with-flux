@@ -83,7 +83,7 @@ end
 env_a_to_network_i(a) = a+1
 network_i_to_env_a(a) = a-1
 
-function polyak_average!(a, b, τ=0.1)
+function polyak_average!(a, b, τ=0.01)
     for (pa, pb) in zip(a, b)
         pa .*= 1 - τ
         pa .+= pb * τ
