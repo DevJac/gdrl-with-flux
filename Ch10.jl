@@ -33,8 +33,8 @@ end
 function (Q::Q)(s)
     n = Q.main_network(s)
     a = Q.action_network(n)
-    v = fill(Q.value_network(n)[1], size(a))
-    v + a .- mean(a)
+    v = Q.value_network(n)
+    v .+ a .- mean(a)
 end
 
 mutable struct Policy{Q, OPT} <: AbstractPolicy
